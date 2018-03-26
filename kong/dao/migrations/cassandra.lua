@@ -633,7 +633,18 @@ return {
   {
     name = "2018-03-22-141700_partition_ssl_certificates",
     up = function(_, _, dao)
-      local _, err = migration_helpers.partition_cassandra_table(dao, "ssl_certificates")
+
+      local _, err = migration_helpers.add_partition(dao, {
+        name    = "ssl_certificates",
+        columns = {
+          id         = "uuid",
+          cert       = "text",
+          key        = "text",
+          created_at = "timestamp",
+        },
+        partition_keys = { "id" },
+      })
+
       if err then
         return err
       end

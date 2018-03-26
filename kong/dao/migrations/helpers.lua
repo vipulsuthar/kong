@@ -1,5 +1,6 @@
 local json_decode = require("cjson.safe").decode
 local cassandra = require("cassandra")
+local utils = require "kong.tools.utils"
 
 
 local _M = {}
@@ -100,21 +101,6 @@ end
 
 do
 
-  -- returns { { column_name = "example", type = "text", kind = "regular" }, ... }
-  -- * column_name is the name of the column: id,
-  -- * type is the cql type: string, int, uuid, list<string>, etc
-  -- * kind is "regular" for non-pk columns, and "partition_key" or "clustering" pks
-  local function get_column_definitions(db, table_name)
-    local cql = fmt([[
-      SELECT column_name, type, kind FROM system_schema.columns
-      WHERE keyspace_name = '%s'
-      AND table_name = '%s'
-      ALLOW FILTERING;
-    ]], db.cluster.keyspace, table_name)
-    return db:query(cql, {}, nil, "read")
-  end
-
-
   local function extract_keys(column_definitions)
     local partition_keys  = {}
     local partition_len   = 0
@@ -134,76 +120,78 @@ do
   end
 
 
-  local function create_partitioned_table(db,
-                                          table_name,
-                                          column_definitions_sans_partition)
+  local function create_table(coordinator, table_def)
 
-    local partition_keys, _ = extract_keys(column_definitions_sans_partition)
-    local primary_key_cql
+    local partition_keys = table_def.partition_keys
+    local primary_key_cql = ""
     if #partition_keys > 0 then
-      primary_key_cql = fmt(", PRIMARY KEY (partition, %s)", table_concat(partition_keys, ", "))
-    else
-      primary_key_cql = fmt(", PRIMARY KEY (partition)")
+      primary_key_cql = fmt(", PRIMARY KEY (%s)", table_concat(partition_keys, ", "))
     end
 
-    local declarations_sans_partition = {}
-    for i, column in ipairs(column_definitions_sans_partition) do
-      declarations_sans_partition[i] = fmt("%s %s", column.column_name, column.type)
+    local column_declarations = {}
+    local len = 0
+    for name, typ in pairs(table_def.columns) do
+      len = len + 1
+      column_declarations[len] = fmt("%s %s", name, typ)
     end
-    local declarations_sans_partition_cql = table_concat(declarations_sans_partition, ", ")
+    local column_declarations_cql = table_concat(column_declarations, ", ")
 
-    local cql = fmt("CREATE TABLE %s.%s(partition text, %s%s);",
-                    db.cluster.keyspace,
-                    table_name,
-                    declarations_sans_partition_cql,
+    local cql = fmt("CREATE TABLE %s(%s%s);",
+                    table_def.name,
+                    column_declarations_cql,
                     primary_key_cql)
-    return db:query(cql, {}, nil, "write")
+    return coordinator:execute(cql, {}, nil, "write")
   end
 
 
-  local function copy_partitioned_records(db,
-                                          source_table_name,
-                                          destination_table_name,
-                                          column_definitions_sans_partition)
+  local function copy_records(coordinator,
+                              source_table_def,
+                              destination_table_def,
+                              columns_to_copy)
 
-    local cql = fmt("SELECT * FROM %s.%s ALLOW FILTERING", db.cluster.keyspace, source_table_name)
-    local coordinator = db:get_coordinator()
+    local cql = fmt("SELECT * FROM %s ALLOW FILTERING", source_table_def.name)
     for rows, err in coordinator:iterate(cql) do
       if err then
         return nil, err
       end
 
-      for _, row in ipairs(rows) do
-        local column_names = { 'partition' }
-        local values = { cassandra.text(destination_table_name) }
-        local len = 1
+      for _, source_row in ipairs(rows) do
+        local column_names = {}
+        local values = {}
+        local len = 0
 
-        -- first value is the partition, which defaults to the table name
-        for _, col in ipairs(column_definitions_sans_partition) do
-          local column_name = col.column_name
-          local value = row[column_name]
-          if value ~= nil then
-            local type_converter = cassandra[col.type]
+        for dest_column_name, source_value in pairs(columns_to_copy) do
+          if type(source_value) == "string" then
+            source_value = source_row[dest_column_name]
+            local dest_type = destination_table_def.columns[dest_column_name]
+            local type_converter = cassandra[dest_type]
             if not type_converter then
               return nil, fmt("Could not find the cassandra type converter for column %s (type %s)",
-                              column_name, col.type)
+                              dest_column_name, source_table_def[dest_column_name])
             end
+            source_value = type_converter(source_value)
+
+          elseif type(source_value) == "function" then
+            source_value = source_value()
+          else
+            return nil, fmt("Expected a string or function, found %s (a %s)",
+                            tostring(source_value), type(source_value))
+          end
+
+          if source_value ~= nil then
             len = len + 1
-            values[len] = type_converter(value)
-            column_names[len] = column_name
+            values[len] = source_value
+            column_names[len] = dest_column_name
           end
         end
 
         local question_marks = string.sub(string.rep("?, ", len), 1, -3)
 
-        -- error(require('inspect')({ cql = insert_cql, values = values }))
-        local insert_cql = fmt("INSERT INTO %s.%s (%s) VALUES (%s)",
-                               db.cluster.keyspace,
-                               destination_table_name,
+        local insert_cql = fmt("INSERT INTO %s (%s) VALUES (%s)",
+                               destination_table_def.name,
                                table_concat(column_names, ", "),
                                question_marks)
-
-        local _, err = db:query(insert_cql, values, nil, "write")
+        local _, err = coordinator:execute(insert_cql, values, nil, "write")
         if err then
           return nil, err
         end
@@ -212,58 +200,72 @@ do
   end
 
 
-  local function drop_table(db, table_name)
-    local cql = fmt("DROP TABLE %s.%s;", db.cluster.keyspace, table_name)
-    return db:query(cql, {}, nil, "write")
+  local function drop_table(coordinator, table_name)
+    local cql = fmt("DROP TABLE %s;", table_name)
+    return coordinator:execute(cql, {}, nil, "write")
   end
 
 
-  local function is_already_partitioned(column_definitions)
-    local partition_keys, clustering_keys = extract_keys(column_definitions)
-    return #partition_keys > 0 and #clustering_keys > 0
+  local function get_columns_to_copy(table_structure)
+    local res = {}
+    for k, _ in pairs(table_structure.columns) do
+      res[k] = k
+    end
+    return res
   end
 
 
-  function _M.partition_cassandra_table(dao, table_name)
+  local function create_aux_table_def(table_def)
+    local aux_table_def = utils.deep_copy(table_def)
+    aux_table_def.name = "copy_of_" .. table_def.name
+    aux_table_def.columns.partition = "text"
+    table.insert(aux_table_def.partition_keys, 1, "partition")
+    return aux_table_def
+  end
+
+
+  function _M.add_partition(dao, table_def)
 
     local db = dao.db
-    local column_definitions, err = get_column_definitions(db, table_name)
+    local coordinator = db:get_coordinator()
+
+    table_def = utils.deep_copy(table_def)
+
+    local aux_table_def = create_aux_table_def(table_def)
+    local columns_to_copy = get_columns_to_copy(table_def)
+    columns_to_copy.partition = function() return cassandra.text(table_def.name) end
+
+    --[[
+    local _, err = create_table(coordinator, aux_table_def)
     if err then
       return nil, err
     end
 
-    if is_already_partitioned(column_definitions) then
-      return nil
-    end
-
-    local aux_table_name = "aux_for_partition_of_" .. table_name
-
-    local _, err = create_partitioned_table(db, aux_table_name, column_definitions)
+    local _, err = copy_records(coordinator, table_def, aux_table_def, columns_to_copy)
     if err then
       return nil, err
     end
 
-    local _, err = copy_partitioned_records(db, table_name, aux_table_name, column_definitions)
+    local _, err = drop_table(coordinator, table_def.name)
+    if err then
+      return nil, err
+    end
+    error("stop")
+    --]]
+    table_def.columns.partition = "text"
+    table.insert(table_def.partition_keys, 1, "partition")
+
+    local _, err = create_table(coordinator, table_def)
     if err then
       return nil, err
     end
 
-    local _, err = drop_table(db, table_name)
+    local _, err = copy_records(coordinator, aux_table_def, table_def, columns_to_copy)
     if err then
       return nil, err
     end
 
-    local _, err = create_partitioned_table(db, table_name, column_definitions)
-    if err then
-      return nil, err
-    end
-
-    local _, err = copy_partitioned_records(db, aux_table_name, table_name, column_definitions)
-    if err then
-      return nil, err
-    end
-
-    local _, err = drop_table(db, aux_table_name)
+    local _, err = drop_table(coordinator, aux_table_def.name)
     if err then
       return nil, err
     end

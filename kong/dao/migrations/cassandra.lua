@@ -1,4 +1,6 @@
 local log = require "kong.cmd.utils.log"
+local cassandra = require "cassandra"
+local utils = require "kong.tools.utils"
 
 local migration_helpers = require "kong.dao.migrations.helpers"
 
@@ -631,10 +633,34 @@ return {
     down = nil
   },
   {
-    name = "2018-03-22-141700_partition_ssl_certificates",
-    up = function(_, _, dao)
+    name = "2018-03-22-141700_create_new_ssl_tables",
+    up = [[
+      CREATE TABLE IF NOT EXISTS certificates(
+        partition text,
+        id uuid,
+        cert text,
+        key text,
+        created_at timestamp,
+        PRIMARY KEY (partition, id)
+      );
 
-      local _, err = migration_helpers.add_partition(dao, {
+      CREATE TABLE IF NOT EXISTS server_names(
+        partition text,
+        id uuid,
+        name text,
+        certificate_id uuid,
+        created_at timestamp,
+        PRIMARY KEY (partition, id, name, certificate_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS ON server_names(certificate_id);
+    ]],
+    down = nil
+  },
+
+  { name = "2018-03-26-234600_copy_records_to_new_ssl_tables",
+    up = function(_, _, dao)
+      local ssl_certificates_def = {
         name    = "ssl_certificates",
         columns = {
           id         = "uuid",
@@ -643,13 +669,77 @@ return {
           created_at = "timestamp",
         },
         partition_keys = { "id" },
-      })
+      }
 
+      local certificates_def = {
+        name    = "certificates",
+        columns = {
+          partition  = "text",
+          id         = "uuid",
+          cert       = "text",
+          key        = "text",
+          created_at = "timestamp",
+        },
+        partition_keys = { "partition", "id" },
+      }
+
+      local _, err = migration_helpers.copy_records(dao,
+        ssl_certificates_def,
+        certificates_def, {
+          partition  = function() return cassandra.text("certificates") end,
+          id         = "id",
+          cert       = "cert",
+          key        = "key",
+          created_at = "created_at",
+        })
+      if err then
+        return err
+      end
+
+      local ssl_servers_names_def = {
+        name    = "ssl_servers_names",
+        columns = {
+          name       = "text",
+          ssl_certificate_id = "uuid",
+          created_at = "timestamp",
+        },
+        partition_keys = { "name", "ssl_certificate_id" },
+      }
+
+      local server_names_def = {
+        name    = "server_names",
+        columns = {
+          partition      = "text",
+          id             = "uuid",
+          name           = "text",
+          certificate_id = "uuid",
+          created_at     = "timestamp",
+        },
+        partition_keys = { "partition", "id", "name", "certificate_id" },
+      }
+
+      local _, err = migration_helpers.copy_records(dao,
+        ssl_servers_names_def,
+        server_names_def, {
+          partition      = function() return cassandra.text("server_names") end,
+          id             = function() return cassandra.uuid(utils.uuid(3)) end,
+          name           = "name",
+          certificate_id = "ssl_certificate_id",
+          created_at     = "created_at",
+        })
       if err then
         return err
       end
     end,
     down = nil
   },
+  { name = "2018-03-27-002500_drop_old_ssl_tables",
+    up = [[
+      DROP INDEX ssl_servers_names_ssl_certificate_id_idx;
+      DROP TABLE ssl_certificates;
+      DROP TABLE ssl_servers_names;
+    ]],
+    down = nil
+  }
 
 }

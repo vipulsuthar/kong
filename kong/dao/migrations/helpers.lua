@@ -99,26 +99,63 @@ function _M.plugin_config_iterator(dao, plugin_name)
   end
 end
 
-do
+function _M.copy_records(dao,
+                         source_table_def,
+                         destination_table_def,
+                         columns_to_copy)
 
-  local function extract_keys(column_definitions)
-    local partition_keys  = {}
-    local partition_len   = 0
-    local clustering_keys = {}
-    local clustering_len  = 0
-    for i, column in ipairs(column_definitions) do
-      if column.kind == "partition_key" then
-        partition_len = partition_len + 1
-        partition_keys[partition_len] = column.column_name
-      elseif column.kind == "clustering" then
-        clustering_len = clustering_len + 1
-        clustering_keys[clustering_len] = column.column_name
-      end
+  local coordinator = dao.db:get_coordinator()
+  local cql = fmt("SELECT * FROM %s ALLOW FILTERING", source_table_def.name)
+  for rows, err in coordinator:iterate(cql) do
+    if err then
+      return nil, err
     end
 
-    return partition_keys, clustering_keys
-  end
+    for _, source_row in ipairs(rows) do
+      local column_names = {}
+      local values = {}
+      local len = 0
 
+      for dest_column_name, source_value in pairs(columns_to_copy) do
+        if type(source_value) == "string" then
+          source_value = source_row[source_value]
+          local dest_type = destination_table_def.columns[dest_column_name]
+          local type_converter = cassandra[dest_type]
+          if not type_converter then
+            return nil, fmt("Could not find the cassandra type converter for column %s (type %s)",
+                            dest_column_name, source_table_def[dest_column_name])
+          end
+          source_value = type_converter(source_value)
+
+        elseif type(source_value) == "function" then
+          source_value = source_value(source_row)
+        else
+          return nil, fmt("Expected a string or function, found %s (a %s)",
+                          tostring(source_value), type(source_value))
+        end
+
+        if source_value ~= nil then
+          len = len + 1
+          values[len] = source_value
+          column_names[len] = dest_column_name
+        end
+      end
+
+      local question_marks = string.sub(string.rep("?, ", len), 1, -3)
+
+      local insert_cql = fmt("INSERT INTO %s (%s) VALUES (%s)",
+                             destination_table_def.name,
+                             table_concat(column_names, ", "),
+                             question_marks)
+      local _, err = coordinator:execute(insert_cql, values, nil, "write")
+      if err then
+        return nil, err
+      end
+    end
+  end
+end
+
+do
 
   local function create_table(coordinator, table_def)
 
@@ -141,62 +178,6 @@ do
                     column_declarations_cql,
                     primary_key_cql)
     return coordinator:execute(cql, {}, nil, "write")
-  end
-
-
-  local function copy_records(coordinator,
-                              source_table_def,
-                              destination_table_def,
-                              columns_to_copy)
-
-    local cql = fmt("SELECT * FROM %s ALLOW FILTERING", source_table_def.name)
-    for rows, err in coordinator:iterate(cql) do
-      if err then
-        return nil, err
-      end
-
-      for _, source_row in ipairs(rows) do
-        local column_names = {}
-        local values = {}
-        local len = 0
-
-        for dest_column_name, source_value in pairs(columns_to_copy) do
-          if type(source_value) == "string" then
-            source_value = source_row[dest_column_name]
-            local dest_type = destination_table_def.columns[dest_column_name]
-            local type_converter = cassandra[dest_type]
-            if not type_converter then
-              return nil, fmt("Could not find the cassandra type converter for column %s (type %s)",
-                              dest_column_name, source_table_def[dest_column_name])
-            end
-            source_value = type_converter(source_value)
-
-          elseif type(source_value) == "function" then
-            source_value = source_value()
-          else
-            return nil, fmt("Expected a string or function, found %s (a %s)",
-                            tostring(source_value), type(source_value))
-          end
-
-          if source_value ~= nil then
-            len = len + 1
-            values[len] = source_value
-            column_names[len] = dest_column_name
-          end
-        end
-
-        local question_marks = string.sub(string.rep("?, ", len), 1, -3)
-
-        local insert_cql = fmt("INSERT INTO %s (%s) VALUES (%s)",
-                               destination_table_def.name,
-                               table_concat(column_names, ", "),
-                               question_marks)
-        local _, err = coordinator:execute(insert_cql, values, nil, "write")
-        if err then
-          return nil, err
-        end
-      end
-    end
   end
 
 
@@ -226,8 +207,7 @@ do
 
   function _M.add_partition(dao, table_def)
 
-    local db = dao.db
-    local coordinator = db:get_coordinator()
+    local coordinator = dao.db:get_coordinator()
 
     table_def = utils.deep_copy(table_def)
 
@@ -235,13 +215,12 @@ do
     local columns_to_copy = get_columns_to_copy(table_def)
     columns_to_copy.partition = function() return cassandra.text(table_def.name) end
 
-    --[[
     local _, err = create_table(coordinator, aux_table_def)
     if err then
       return nil, err
     end
 
-    local _, err = copy_records(coordinator, table_def, aux_table_def, columns_to_copy)
+    local _, err = _M.copy_records(dao, table_def, aux_table_def, columns_to_copy)
     if err then
       return nil, err
     end
@@ -251,7 +230,7 @@ do
       return nil, err
     end
     error("stop")
-    --]]
+
     table_def.columns.partition = "text"
     table.insert(table_def.partition_keys, 1, "partition")
 
@@ -260,7 +239,7 @@ do
       return nil, err
     end
 
-    local _, err = copy_records(coordinator, aux_table_def, table_def, columns_to_copy)
+    local _, err = _M.copy_records(dao, aux_table_def, table_def, columns_to_copy)
     if err then
       return nil, err
     end

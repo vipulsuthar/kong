@@ -1,3 +1,5 @@
+local utils = require "kong.tools.utils"
+
 return {
   {
     name = "2015-01-12-175310_skeleton",
@@ -689,6 +691,51 @@ return {
           CREATE INDEX plugins_service_id_idx ON plugins(service_id);
         END IF;
       END$$;
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-03-27-123400_prepare_certs_and_server_names",
+    up = [[
+      ALTER TABLE ssl_certificates    RENAME TO certificates;
+      ALTER TABLE ssl_servers_names   RENAME TO server_names;
+
+      ALTER TABLE server_names RENAME COLUMN ssl_certificate_id TO certificate_id;
+      ALTER TABLE server_names ADD    COLUMN id uuid;
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-03-27-125400_fill_in_server_names_ids",
+    up = function(_, _, dao)
+      local rows, err = dao.db:query([[
+        SELECT * FROM server_names;
+      ]])
+      if err then
+        return err
+      end
+
+      local fmt = string.format
+
+      for _, row in ipairs(rows) do
+        local sql = fmt("UPDATE server_names SET id = '%s' WHERE name = '%s';",
+                        utils.uuid(),
+                        row.name)
+        local _, err = dao.db:query(sql)
+        if err then
+          return err
+        end
+      end
+    end,
+    down = nil
+  },
+  {
+    name = "2018-03-27-130400_make_ids_primary_keys_in_server_names",
+    up = [[
+      ALTER TABLE server_names DROP   CONSTRAINT ssl_servers_names_pkey;
+      ALTER TABLE server_names ADD    CONSTRAINT server_names_name_unique UNIQUE(name);
+      ALTER TABLE server_names ADD    PRIMARY KEY(id);
+      ALTER TABLE server_names RENAME CONSTRAINT ssl_servers_names_ssl_certificate_id_fkey TO server_names_certificate_id_fkey;
     ]],
     down = nil
   },

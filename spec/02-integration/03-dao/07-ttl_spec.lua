@@ -21,12 +21,14 @@ for _, strategy in helpers.each_strategy() do
         name         = "example",
         hosts        = { "example.com" },
         upstream_url = "http://example.com"
-      }, { ttl = 2 })
+      }, { ttl = 3 })
       assert.falsy(err)
 
       local row, err = dao.apis:find {id = api.id}
       assert.falsy(err)
       assert.truthy(row)
+
+      ngx.sleep(4)
 
       helpers.wait_until(function()
         row, err = dao.apis:find {id = api.id}

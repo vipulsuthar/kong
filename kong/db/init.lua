@@ -21,7 +21,8 @@ local setmetatable = setmetatable
 local CORE_ENTITIES = {
   "routes",
   "services",
-  "ssl_certificates",
+  "certificates",
+  "server_names",
 }
 
 

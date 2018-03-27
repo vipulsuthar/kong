@@ -650,10 +650,11 @@ return {
         name text,
         certificate_id uuid,
         created_at timestamp,
-        PRIMARY KEY (partition, id, name, certificate_id)
+        PRIMARY KEY (partition, id)
       );
 
-      CREATE INDEX IF NOT EXISTS ON server_names(certificate_id);
+      CREATE INDEX IF NOT EXISTS server_names_name_idx ON server_names(name);
+      CREATE INDEX IF NOT EXISTS server_names_certificate_id_idx ON server_names(certificate_id);
     ]],
     down = nil
   },
@@ -715,7 +716,7 @@ return {
           certificate_id = "uuid",
           created_at     = "timestamp",
         },
-        partition_keys = { "partition", "id", "name", "certificate_id" },
+        partition_keys = { "partition", "id" },
       }
 
       local _, err = migration_helpers.copy_records(dao,

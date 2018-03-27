@@ -6,7 +6,6 @@ local CORE_MODELS = {
   "apis",
   "consumers",
   "plugins",
-  "ssl_servers_names",
   "upstreams",
   "targets",
 }

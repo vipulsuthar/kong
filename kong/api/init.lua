@@ -224,7 +224,7 @@ do
 
   -- Auto Generated Routes
   for _, dao in pairs(singletons.db.daos) do
-    if dao.schema.name ~= "ssl_certificates" then
+    if dao.schema.name ~= "certificates" then
       routes = Endpoints.new(dao.schema, routes)
     end
   end

@@ -1,9 +1,9 @@
 local typedefs = require "kong.db.schema.typedefs"
 
 return {
-  name        = "ssl_certificates",
+  name        = "certificates",
   primary_key = { "id" },
-  dao         = "kong.db.dao.ssl_certificates",
+  dao         = "kong.db.dao.certificates",
 
   fields = {
     { id = typedefs.uuid, },

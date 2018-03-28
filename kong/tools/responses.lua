@@ -123,7 +123,6 @@ local function send_response(status_code)
     end
 
     ngx.status = status_code
-    ngx.header["Content-Type"] = "application/json; charset=utf-8"
     ngx.header["Server"] = server_header
 
     if headers then
@@ -144,6 +143,7 @@ local function send_response(status_code)
         ngx.log(ngx.ERR, "[admin] could not encode value: ", err)
       end
 
+      ngx.header["Content-Type"] = "application/json; charset=utf-8"
       ngx.say(encoded)
     end
 

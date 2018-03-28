@@ -30,6 +30,7 @@ for _, strategy in helpers.each_strategy() do
 
       --ngx.sleep(3)
 
+print(ngx.now())
       helpers.wait_until(function()
         row, err = dao.apis:find {id = api.id}
 print(type(row))
@@ -41,6 +42,7 @@ if type(row) == "table" then
   print(ngx.now(), " ", table.concat(out, " "))
 end
         assert.falsy(err)
+print("no err")
         return row == nil
       end, 14)
     end)

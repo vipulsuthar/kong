@@ -216,10 +216,12 @@ local function wait_until(f, timeout)
   local texp = tstart + timeout
   local ok, res, err
 
+print("tstart: ", tstart)
   repeat
     ngx.update_time()
     ngx.sleep(0.2)
     ok, res, err = pcall(f)
+print("wait until: ", tostring(ok), " / ", tostring(res), " / ", tostring(err))
   until not ok or res or ngx.time() >= texp
 
   if not ok then

@@ -2,8 +2,24 @@ local helpers = require "spec.helpers"
 local utils   = require "kong.tools.utils"
 
 
-local function acl_cache_key(route_id, username)
-  return "ldap_auth_cache:" .. route_id .. ":" .. username
+local concat  = table.concat
+local md5     = ngx.md5
+
+
+local function acl_cache_key(conf, username)
+  local cache_key = {
+    "ldap_auth_cache",
+    md5(concat({
+      conf.ldap_host,
+      conf.ldap_port,
+      conf.base_dn,
+      conf.attribute,
+      username,
+      conf.cache_ttl,
+    }, ":"))
+  }
+
+  return concat(cache_key, ":")
 end
 
 
@@ -346,7 +362,7 @@ for _, strategy in helpers.each_strategy() do
       assert.response(res).has.status(200)
 
       -- Check that cache is populated
-      local cache_key = acl_cache_key(route2.id, "einstein")
+      local cache_key = acl_cache_key(plugin2.config, "einstein")
 
       helpers.wait_until(function()
         local res = assert(admin_client:send {

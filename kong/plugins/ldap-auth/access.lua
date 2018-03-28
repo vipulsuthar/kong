@@ -7,10 +7,12 @@ local match = string.match
 local lower = string.lower
 local find = string.find
 local sub = string.sub
+local concat = table.concat
 local ngx_log = ngx.log
 local request = ngx.req
 local ngx_error = ngx.ERR
 local ngx_debug = ngx.DEBUG
+local md5 = ngx.md5
 local decode_base64 = ngx.decode_base64
 local ngx_socket_tcp = ngx.socket.tcp
 local ngx_set_header = ngx.req.set_header
@@ -84,14 +86,31 @@ local function load_credential(given_username, given_password, conf)
   return {username = given_username, password = given_password}
 end
 
+
+local function acl_cache_key(conf, username)
+  local cache_key = {
+    "ldap_auth_cache",
+    md5(concat({
+      conf.ldap_host,
+      conf.ldap_port,
+      conf.base_dn,
+      conf.attribute,
+      username,
+      conf.cache_ttl,
+    }, ":"))
+  }
+
+  return concat(cache_key, ":")
+end
+
+
 local function authenticate(conf, given_credentials)
   local given_username, given_password = retrieve_credentials(given_credentials, conf)
   if given_username == nil then
     return false
   end
 
-  local route_id = conf.route_id or conf.api_id
-  local cache_key = "ldap_auth_cache:" .. route_id .. ":" .. given_username
+  local cache_key = acl_cache_key(conf, given_username)
   local credential, err = singletons.cache:get(cache_key, {
     ttl = conf.cache_ttl,
     neg_ttl = conf.cache_ttl,

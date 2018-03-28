@@ -152,7 +152,7 @@ return {
       reports.init_worker()
 
       -- initialize local local_events hooks
-
+      local db             = singletons.db
       local dao            = singletons.dao
       local cache          = singletons.cache
       local worker_events  = singletons.worker_events
@@ -257,15 +257,15 @@ return {
 
         cache:invalidate("pem_ssl_certificates:"    .. sni.name)
         cache:invalidate("parsed_ssl_certificates:" .. sni.name)
-      end, "crud", "ssl_servers_names")
+      end, "crud", "server_names")
 
 
       worker_events.register(function(data)
         log(DEBUG, "[events] SSL cert updated, invalidating cached certificates")
         local certificate = data.entity
 
-        local rows, err = dao.ssl_servers_names:find_all {
-          ssl_certificate_id = certificate.id
+        local rows, err = db.server_names:for_certificate {
+          certificate_id = certificate.id
         }
         if not rows then
           log(ERR, "[events] could not find associated SNIs for certificate: ",
@@ -278,7 +278,7 @@ return {
           cache:invalidate("pem_ssl_certificates:"    .. sni.name)
           cache:invalidate("parsed_ssl_certificates:" .. sni.name)
         end
-      end, "crud", "ssl_certificates")
+      end, "crud", "certificates")
 
 
       -- target updates

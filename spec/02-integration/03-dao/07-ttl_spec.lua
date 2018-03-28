@@ -32,7 +32,9 @@ for _, strategy in helpers.each_strategy() do
 
 print(ngx.now())
       helpers.wait_until(function()
+print("before find ", ngx.now())
         row, err = dao.apis:find {id = api.id}
+print("after find ", ngx.now())
 print(type(row))
 if type(row) == "table" then
   local out = {}

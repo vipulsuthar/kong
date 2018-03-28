@@ -217,6 +217,7 @@ local function wait_until(f, timeout)
   local ok, res, err
 
   repeat
+    ngx.update_time()
     ngx.sleep(0.2)
     ok, res, err = pcall(f)
   until not ok or res or ngx.time() >= texp

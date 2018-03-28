@@ -28,13 +28,13 @@ for _, strategy in helpers.each_strategy() do
       assert.falsy(err)
       assert.truthy(row)
 
-      ngx.sleep(3)
+      --ngx.sleep(3)
 
       helpers.wait_until(function()
         row, err = dao.apis:find {id = api.id}
         assert.falsy(err)
         return row == nil
-      end, 10)
+      end, 14)
     end)
 
     it("on update", function()

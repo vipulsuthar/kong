@@ -32,6 +32,14 @@ for _, strategy in helpers.each_strategy() do
 
       helpers.wait_until(function()
         row, err = dao.apis:find {id = api.id}
+print(type(row))
+if type(row) == "table" then
+  local out = {}
+  for k,v in pairs(row) do
+    table.insert(out, tostring(k) .. ":" .. tostring(v))
+  end
+  print(ngx.now(), " ", table.concat(out, " "))
+end
         assert.falsy(err)
         return row == nil
       end, 14)
